@@ -1,3 +1,5 @@
+require('dotenv').config();
+const jwt = require('jsonwebtoken');
 const express = require('express');
 
 const db = require("better-sqlite3")("ourApp.db");
@@ -52,7 +54,7 @@ app.post('/register', (req, res)=>{
     if(username && username.length > 10) errors.push("Username must not exceed 10 characters");
     if(username && !username.match(/^[a-zA-Z0-9]+$/)) errors.push("Username must contain only alphanumeric characters");
 
-    if(!password) errors.push("Username is required");
+    if(!password) errors.push("Password is required");
     if(password && password.length < 10) errors.push("Password must be at least 10 characters long");
     if(password && password.length > 30) errors.push("Password must not exceed 30 characters");
     if(errors.length){
@@ -61,9 +63,25 @@ app.post('/register', (req, res)=>{
 
     //save user to database.
     const ourStatement = db.prepare("INSERT INTO users (username, password) VALUES (?, ?)");
-    ourStatement.run(username, password);
+    const result = ourStatement.run(username, password);
+    const lookUpStatement = db.prepare("SELECT * FROM users WHERE ROWID = ?");
+    const ourUser = lookUpStatement.get(result.lastInsertRowid);
     //Log the user in by giving them a cookie or a session.
-    res.send("Thankyou!");
+    const ourTokenValue = jwt.sign({
+        exp:Math.floor(Date.now()/1000) + 60*60*24, //1 day
+        skyColor:"blue",
+        userId:ourUser.id,
+        username:ourUser.username
+    },process.env.JWTSECRET);
+
+
+    res.cookie("ourSimpleApp",ourTokenValue,{
+        httpOnly:true,
+        secure:true,
+        sameSite:"strict",
+        maxAge:1000*60*60*24 //24 hours
+    });
+    res.send("thankyou!");
 });
 
 app.listen(3000);
