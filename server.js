@@ -1,5 +1,6 @@
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
+const sanitizeHTML = require('sanitize-html');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const db = require("better-sqlite3")("ourApp.db");
@@ -13,7 +14,16 @@ const createTable = db.transaction(()=>{
         password NOT NULL
         )
         `).run();
-
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS posts(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        createdDate TEXT,
+        title STRING NOT NULL,
+        body STRING NOT NULL,
+        authorId INTEGER NOT NULL,
+        FOREIGN KEY(authorId) REFERENCES users(id)
+        )
+        `).run();
 })
 
 createTable();
@@ -60,6 +70,96 @@ app.get('/logout', (req, res)=>{
     res.redirect("/");
 });
 
+app.post('/login', (req, res)=>{
+    let errors = [];
+    const username = req.body.username.trim();
+    const password = req.body.password;
+    if(typeof username !== 'string') username = '';
+    if(typeof password !== 'string') password = '';
+
+    if(username == "") errors =["Invalid username or password."];
+    if(password == "") errors = ["Invalid username or password."];
+
+    if(errors.length){
+        return res.render('login', {errors});
+    }
+
+    const userinQuestionStatement = db.prepare("SELECT * FROM users WHERE username = ?");
+    const userinQuestion = userinQuestionStatement.get(username);
+
+    if(!userinQuestion){
+        errors = ["Invalid username or password."];
+        return res.render('login', {errors});
+    }
+
+    const matchOrNot = bcrypt.compareSync(password, userinQuestion.password);
+    if(!matchOrNot){
+        errors = ["Invalid username or password."];
+        return res.render('login', {errors});
+    }
+
+    //give them a cookie or a session.
+    const ourTokenValue = jwt.sign({
+        exp:Math.floor(Date.now()/1000) + 60*60*24, //1 day
+        skyColor:"blue",
+        userId:userinQuestion.id,
+        username:userinQuestion.username
+    },process.env.JWTSECRET);
+
+
+    res.cookie("ourSimpleApp",ourTokenValue,{
+        httpOnly:true,
+        secure:true,
+        sameSite:"strict",
+        maxAge:1000*60*60*24 //24 hours
+    });
+    res.redirect('/');
+    //redirect to homepage.
+});
+
+function mustbeLoggedIn(req,res,next){
+    if(req.user){
+        return next();
+    }
+    res.redirect('/');
+    next();
+}
+
+app.get('/create-post', mustbeLoggedIn, (req, res)=>{
+    res.render('create-post');
+});
+
+function sharedPostValidation(req){
+    const errors = [];
+
+    if(typeof req.body.title !== 'string') req.body.title = '';
+    if(typeof req.body.body !== 'string') req.body.body = '';
+
+    //trim-santize or strip out html tags.
+    req.body.title = sanitizeHTML(req.body.title.trim(),{allowedTags:[], allowedAttributes:{}});
+    req.body.body = sanitizeHTML(req.body.body.trim(),{allowedTags:[], allowedAttributes:{}});
+
+    if(!req.body.title) errors.push("You must provide a title");
+    if(!req.body.body) errors.push("You must provide post content");
+}
+
+app.post('/create-post',mustbeLoggedIn, (req, res)=>{
+    const errorrs = sharedPostValidation(req);
+
+    if(errors.length){
+        return res.render('create-post',{errors});
+    }
+    //save it to database.
+    const ourStatement = db.prepare("INSERT INTO posts (title, body, authorId, createdDate) VALUES (?,?,?,?)");
+    const result = ourStatement.run(req.body.title, req.body.body, req.user.userId, new Date().toISOString());
+
+    const getPostStatement = db.prepare("SELECT * FROM posts WHERE id = ?");
+    const realPost = getPostStatement.get(result.lastInsertRowid);
+
+    res.redirect(`/post/${realPost.id}`);
+});
+
+
 app.post('/register', (req, res)=>{
     const errors = [];
     const username = req.body.username.trim();
@@ -71,6 +171,11 @@ app.post('/register', (req, res)=>{
     if(username && username.length < 4) errors.push("Username must be at least 4 characters long");
     if(username && username.length > 10) errors.push("Username must not exceed 10 characters");
     if(username && !username.match(/^[a-zA-Z0-9]+$/)) errors.push("Username must contain only alphanumeric characters");
+    //validate username is unique.
+    const usernameStatement = db.prepare("SELECT * FROM users WHERE username = ?");
+    const existingUser = usernameStatement.get(username);
+
+    if(existingUser) errors.push("Username is already taken");
 
     if(!password) errors.push("Password is required");
     if(password && password.length < 10) errors.push("Password must be at least 10 characters long");
